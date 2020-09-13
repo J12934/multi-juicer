@@ -15,7 +15,7 @@ jobs:
       - name: Prepare
         id: prep
         run: |
-          DOCKER_IMAGE=docker.pkg.github.com/j12934/multi-juicer/juice-balancer
+          DOCKER_IMAGE=j12934/multi-juicer-balancer
           VERSION=noop
           if [ "${{ github.event_name }}" = "schedule" ]; then
             VERSION=nightly
@@ -48,7 +48,6 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v1
         with:
-          registry: docker.pkg.github.com
           username: j12934
           password: ${{ secrets.DOCKER_TOKEN }}
       - name: Build and push
