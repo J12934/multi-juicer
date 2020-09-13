@@ -1,57 +1,68 @@
 on:
-  release:
-    types: [published]
-name: 'Publish Docker Images'
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*.*.*"
+  pull_request:
+name: "Publish Docker Images"
 jobs:
-  helmRelease:
-    name: 'Package Helm Chart'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v1
-      - uses: J12934/helm-gh-pages-action@v2.0.0
-        with:
-          access-token: ${{ secrets.ACCESS_TOKEN }}
-          charts-folder: helm
-          deploy-branch: gh-pages
-  progressWatchDog:
-    name: ProgressWatchDog
+  juice-balancer:
+    name: JuiceBalancer
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@master
-      - name: Build'n Push ProgressWatchDog
-        uses: pangzineng/Github-Action-One-Click-Docker@bfb4a810c8cb823f4a87c24da145caa707e297e9
-        env:
-          DOCKER_IMAGE_NAME: juice-progress-watchdog
-          DOCKER_NAMESPACE: iteratec
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      - name: Prepare
+        id: prep
+        run: |
+          DOCKER_IMAGE=docker.pkg.github.com/j12934/multi-juicer/juice-balancer
+          VERSION=noop
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            VERSION=nightly
+          elif [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          elif [[ $GITHUB_REF == refs/heads/* ]]; then
+            VERSION=$(echo ${GITHUB_REF#refs/heads/} | sed -r 's#/+#-#g')
+            if [ "${{ github.event.repository.default_branch }}" = "$VERSION" ]; then
+              VERSION=edge
+            fi
+          elif [[ $GITHUB_REF == refs/pull/* ]]; then
+            VERSION=pr-${{ github.event.number }}
+          fi
+          TAGS="${DOCKER_IMAGE}:${VERSION}"
+          if [[ $VERSION =~ ^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            MINOR=${VERSION%.*}
+            MAJOR=${MINOR%.*}
+            TAGS="$TAGS,${DOCKER_IMAGE}:${MINOR},${DOCKER_IMAGE}:${MAJOR},${DOCKER_IMAGE}:latest"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            TAGS="$TAGS,${DOCKER_IMAGE}:sha-${GITHUB_SHA::8}"
+          fi
+          echo ::set-output name=version::${VERSION}
+          echo ::set-output name=tags::${TAGS}
+          echo ::set-output name=created::$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      - name: Login to GitHub Package Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v1
         with:
-          args: ./progress-watchdog/
-  cleaner:
-    name: Cleaner
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@master
-      - name: Build'n Push Cleaner
-        uses: pangzineng/Github-Action-One-Click-Docker@bfb4a810c8cb823f4a87c24da145caa707e297e9
-        env:
-          DOCKER_IMAGE_NAME: juice-cleaner
-          DOCKER_NAMESPACE: iteratec
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          registry: docker.pkg.github.com
+          username: j12934
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Build and push
+        id: docker_build
+        uses: docker/build-push-action@v2
         with:
-          args: ./cleaner/
-  balancer:
-    name: Balancer
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@master
-      - name: Build'n Push Balancer
-        uses: pangzineng/Github-Action-One-Click-Docker@bfb4a810c8cb823f4a87c24da145caa707e297e9
-        env:
-          DOCKER_IMAGE_NAME: juice-balancer
-          DOCKER_NAMESPACE: iteratec
-          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-        with:
-          args: ./juice-balancer/
+          context: ./juice-balancer/
+          file: ./juice-balancer/Dockerfile
+          platforms: linux/amd64,linux/arm64,linux/386
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.prep.outputs.tags }}
+          labels: |
+            org.opencontainers.image.created=${{ steps.prep.outputs.created }}
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            org.opencontainers.image.version=${{ steps.prep.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=${{ github.event.repository.license.name }}
